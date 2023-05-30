@@ -3,13 +3,14 @@ package mr
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io/ioutil"
+	"log"
+	"net/rpc"
 	"os"
+	"path/filepath"
 	"sync"
 )
-import "log"
-import "net/rpc"
-import "hash/fnv"
 
 //
 // Map functions return a slice of KeyValue.
@@ -39,7 +40,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		task := getTask()
 		if task.TaskStatus == Exit {
 			break
-		} else if task.TaskStatus == Idle {
+		} else if task.TaskStatus == Wait {
 			continue
 		}
 		switch task.TaskType {
@@ -58,17 +59,20 @@ func reportTask(task *Task) {
 		WorkerID: task.WorkerID,
 	}
 	reply := ReportTaskReply{}
-	call("Coordinator.ReportTask", &args, &reply)
+	call("Coordinator.MarkTask", &args, &reply)
 }
 
 func performMap(task *Task, mapf func(string, string) []KeyValue) {
 	file, err := os.Open(task.InputFile)
+	fmt.Printf("Opening %v\n", task.InputFile)
 	if err != nil {
-		fmt.Printf("cannot open the map file %v\n", task.InputFile)
+		fmt.Printf("cannot open the map file %v\n", task)
+		return
 	}
 	contents, err := ioutil.ReadAll(file)
 	if err != nil {
-		fmt.Printf("cannot read the map file %v\n", task.InputFile)
+		fmt.Printf("cannot read the map file %v\n", task)
+		return
 	}
 	file.Close()
 	keyValues := mapf(task.InputFile, string(contents))
@@ -131,7 +135,24 @@ func writeIntermediateFiles(intermediateValues [][]KeyValue, taskID int) error {
 }
 
 func performReduce(task *Task, reducef func(string, []string) string) {
-
+	pattern := fmt.Sprintf("mr-*-%d", task.ID)
+	matches, _ := filepath.Glob(pattern)
+	foo := make(map[string][]string)
+	for index, _ := range matches {
+		f, _ := os.Open(matches[index])
+		decoder := json.NewDecoder(f)
+		for {
+			var kv KeyValue
+			if err := decoder.Decode(&kv); err != nil {
+				break
+			}
+			foo[kv.Key] = append(foo[kv.Key], kv.Value)
+		}
+	}
+	for key, val := range foo {
+		fmt.Printf("key %v, count %v\n", key, reducef(key, val))
+	}
+	reportTask(task)
 }
 
 func getTask() *Task {

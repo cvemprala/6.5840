@@ -3,13 +3,13 @@ package mr
 import (
 	"fmt"
 	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
 	"sync"
 	"time"
 )
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
 
 type TaskStatus int
 
@@ -62,7 +62,11 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	task := c.AssignTask(args.WorkerID)
 	reply.Task = task
 	if task.TaskStatus == InProgress {
-		go c.checkTimeout(fmt.Sprintf("%d-%d", task.TaskType, task.ID))
+		taskID := fmt.Sprintf("Map-%d", task.ID)
+		if task.TaskType == TaskReduce {
+			taskID = fmt.Sprintf("Reduce-%d", task.ID)
+		}
+		go c.checkTimeout(taskID)
 	}
 	return nil
 }
@@ -78,6 +82,7 @@ func (c *Coordinator) checkTimeout(taskID string) {
 	defer c.mu.Unlock()
 	task := c.tasks[taskID]
 	if task.TaskStatus == InProgress {
+		fmt.Printf("Checking time out for %v", task)
 		task.InputFile = ""
 		task.TaskStatus = Idle
 		task.WorkerID = -1
@@ -121,6 +126,7 @@ func (c *Coordinator) AssignTask(workerID int) *Task {
 	} else if c.mTaskCount > 0 {
 		select {
 		case task := <-c.mapTasks:
+			fmt.Printf("serve map task for %v\n", task.InputFile)
 			task.TaskStatus = InProgress
 			task.Timestamp = time.Now()
 			task.WorkerID = workerID
@@ -138,6 +144,7 @@ func (c *Coordinator) AssignTask(workerID int) *Task {
 			c.tasks[fmt.Sprintf("Reduce-%d", task.ID)] = task
 			return task
 		default:
+			fmt.Println("waiting for reduce to complete")
 			return &Task{TaskStatus: Wait}
 		}
 	} else {
@@ -178,6 +185,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 			NReduce:    nReduce,
 		}
 		mapTasks <- task
+		fmt.Printf("create map task for %v\n", task.InputFile)
 		taskMap[fmt.Sprintf("Map-%d", index)] = task
 	}
 
