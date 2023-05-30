@@ -97,7 +97,7 @@ func (c *Coordinator) MarkTaskCompleted(taskID int, taskType TaskType, workerID 
 		id = fmt.Sprintf("%s-%d", "Reduce", taskID)
 	}
 	task := c.tasks[id]
-	if task.WorkerID == workerID {
+	if task.WorkerID == workerID { // task is assigned to the worker
 		task.TaskStatus = Completed
 		if task.TaskType == TaskMap {
 			c.mTaskCount--
@@ -109,7 +109,7 @@ func (c *Coordinator) MarkTaskCompleted(taskID int, taskType TaskType, workerID 
 		}
 		return true
 	}
-	return false
+	return false // this happens when the task is reassigned to another worker
 }
 
 func (c *Coordinator) AssignTask(workerID int) *Task {
