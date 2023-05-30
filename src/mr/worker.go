@@ -1,8 +1,11 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"os"
+	"sync"
 )
 import "log"
 import "net/rpc"
@@ -59,7 +62,72 @@ func reportTask(task *Task) {
 }
 
 func performMap(task *Task, mapf func(string, string) []KeyValue) {
+	file, err := os.Open(task.InputFile)
+	if err != nil {
+		fmt.Printf("cannot open the map file %v\n", task.InputFile)
+	}
+	contents, err := ioutil.ReadAll(file)
+	if err != nil {
+		fmt.Printf("cannot read the map file %v\n", task.InputFile)
+	}
+	file.Close()
+	keyValues := mapf(task.InputFile, string(contents))
 
+	// once I get the keyValues, we need to write them to intermediate files
+	// in order to do that we need to group the keyValues by their key
+	// the way we do that is by first calculating the hash of the key
+	// then we use the hash to determine which file to write the keyValues to
+	intermediateValues := make([][]KeyValue, task.NReduce)
+	for _, keyValue := range keyValues {
+		index := ihash(keyValue.Key) % task.NReduce
+		intermediateValues[index] = append(intermediateValues[index], keyValue)
+	}
+	err = writeIntermediateFiles(intermediateValues, task.ID)
+	if err != nil {
+		fmt.Printf("cannot write the intermediate files %v\n", err)
+		task.TaskStatus = Failed
+	} else {
+		task.TaskStatus = Completed
+	}
+	reportTask(task)
+}
+
+func writeIntermediateFiles(intermediateValues [][]KeyValue, taskID int) error {
+	var wg sync.WaitGroup
+	wg.Add(len(intermediateValues))
+	errChan := make(chan error, len(intermediateValues))
+	for index, keyValues := range intermediateValues {
+		go func(index int, keyValues []KeyValue) {
+			defer wg.Done()
+			fileName := fmt.Sprintf("mr-%d-%d", taskID, index)
+			file, err := os.Create(fileName)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			defer file.Close()
+			enc := json.NewEncoder(file)
+			for _, keyValue := range keyValues {
+				err := enc.Encode(&keyValue)
+				if err != nil {
+					errChan <- err
+					return
+				}
+			}
+		}(index, keyValues)
+	}
+
+	go func() {
+		wg.Wait()
+		close(errChan)
+	}()
+
+	for err := range errChan {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func performReduce(task *Task, reducef func(string, []string) string) {
