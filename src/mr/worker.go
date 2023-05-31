@@ -41,6 +41,9 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	for {
 		task := getTask()
+		if task == nil {
+			break
+		}
 		if task.TaskStatus == Exit {
 			break
 		} else if task.TaskStatus == Wait {
@@ -57,10 +60,9 @@ func Worker(mapf func(string, string) []KeyValue,
 
 func reportTask(task *Task) {
 	args := ReportTaskArgs{
-		ID:         task.ID,
-		TaskType:   task.TaskType,
-		WorkerID:   task.WorkerID,
-		TaskStatus: task.TaskStatus,
+		ID:       task.ID,
+		TaskType: task.TaskType,
+		WorkerID: task.WorkerID,
 	}
 	reply := ReportTaskReply{}
 	call("Coordinator.MarkTask", &args, &reply)
@@ -69,14 +71,10 @@ func reportTask(task *Task) {
 func performMap(task *Task, mapf func(string, string) []KeyValue) {
 	file, err := os.Open(task.InputFile)
 	if err != nil {
-		task.TaskStatus = Failed
-		reportTask(task)
 		return
 	}
 	contents, err := ioutil.ReadAll(file)
 	if err != nil {
-		task.TaskStatus = Failed
-		reportTask(task)
 		return
 	}
 	file.Close()
@@ -93,7 +91,7 @@ func performMap(task *Task, mapf func(string, string) []KeyValue) {
 	}
 	err = writeIntermediateFiles(intermediateValues, task.ID)
 	if err != nil {
-		task.TaskStatus = Failed
+		return
 	}
 	reportTask(task)
 }
@@ -146,8 +144,6 @@ func performReduce(task *Task, reducef func(string, []string) string) {
 	for index, _ := range matches {
 		f, err := os.Open(matches[index])
 		if err != nil {
-			task.TaskStatus = Failed
-			reportTask(task)
 			return
 		}
 		decoder := json.NewDecoder(f)
@@ -178,15 +174,11 @@ func performReduce(task *Task, reducef func(string, []string) string) {
 	}
 	err = writer.Flush()
 	if err != nil {
-		task.TaskStatus = Failed
-		reportTask(task)
 		return
 	}
 
 	err = atomicWrite(fmt.Sprintf("mr-out-%d", task.ID), &buffer)
 	if err != nil {
-		task.TaskStatus = Failed
-		reportTask(task)
 		return
 	}
 	reportTask(task)
@@ -197,7 +189,10 @@ func getTask() *Task {
 		WorkerID: os.Getpid(),
 	}
 	reply := GetTaskReply{}
-	call("Coordinator.GetTask", &args, &reply)
+	ok := call("Coordinator.GetTask", &args, &reply)
+	if !ok {
+		return nil
+	}
 	return reply.Task
 }
 
@@ -212,6 +207,7 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
 		log.Fatal("dialing:", err)
+		return false
 	}
 	defer c.Close()
 
@@ -219,8 +215,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	if err == nil {
 		return true
 	}
-
-	fmt.Println(err)
 	return false
 }
 

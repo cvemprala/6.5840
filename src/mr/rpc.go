@@ -32,10 +32,9 @@ type GetTaskReply struct {
 }
 
 type ReportTaskArgs struct {
-	ID         int
-	TaskType   TaskType
-	WorkerID   int
-	TaskStatus TaskStatus
+	ID       int
+	TaskType TaskType
+	WorkerID int
 }
 
 type ReportTaskReply struct {

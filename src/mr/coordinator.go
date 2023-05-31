@@ -72,7 +72,7 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 }
 
 func (c *Coordinator) MarkTask(args *ReportTaskArgs, reply *ReportTaskReply) error {
-	reply.OK = c.MarkTaskCompleted(args.ID, args.TaskType, args.WorkerID, args.TaskStatus)
+	reply.OK = c.MarkTaskCompleted(args.ID, args.TaskType, args.WorkerID)
 	return nil
 }
 
@@ -82,7 +82,6 @@ func (c *Coordinator) checkTimeout(taskID string) {
 	defer c.mu.Unlock()
 	task := c.tasks[taskID]
 	if task.TaskStatus == InProgress {
-		task.InputFile = ""
 		task.TaskStatus = Idle
 		task.WorkerID = -1
 		task.Timestamp = time.Time{}
@@ -94,7 +93,7 @@ func (c *Coordinator) checkTimeout(taskID string) {
 	}
 }
 
-func (c *Coordinator) MarkTaskCompleted(taskID int, taskType TaskType, workerID int, taskStatus TaskStatus) bool {
+func (c *Coordinator) MarkTaskCompleted(taskID int, taskType TaskType, workerID int) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	id := fmt.Sprintf("%s-%d", "Map", taskID)
@@ -102,28 +101,17 @@ func (c *Coordinator) MarkTaskCompleted(taskID int, taskType TaskType, workerID 
 		id = fmt.Sprintf("%s-%d", "Reduce", taskID)
 	}
 	task := c.tasks[id]
-	if task.WorkerID == workerID { // task is assigned to the worker
-		if task.TaskStatus == InProgress && taskStatus != Failed {
-			task.TaskStatus = Completed
-			if task.TaskType == TaskMap {
-				c.mTaskCount--
-			} else {
-				c.rTaskCount--
-			}
-			if c.mTaskCount == 0 && c.rTaskCount == 0 {
-				c.state = Done
-			}
-			return true
-		} else if taskStatus == Failed {
-			task.TaskStatus = Idle
-			task.WorkerID = -1
-			task.Timestamp = time.Time{}
-			if task.TaskType == TaskMap {
-				c.mapTasks <- task
-			} else {
-				c.reduceTasks <- task
-			}
+	if task.WorkerID == workerID && task.TaskStatus == InProgress { // task is assigned to the worker
+		task.TaskStatus = Completed
+		if task.TaskType == TaskMap {
+			c.mTaskCount--
+		} else {
+			c.rTaskCount--
 		}
+		if c.mTaskCount == 0 && c.rTaskCount == 0 {
+			c.state = Done
+		}
+		return true
 	}
 	return false // this happens when the task is reassigned to another worker
 }
