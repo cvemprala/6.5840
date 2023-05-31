@@ -2,9 +2,11 @@ package mr
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/rpc"
@@ -55,9 +57,10 @@ func Worker(mapf func(string, string) []KeyValue,
 
 func reportTask(task *Task) {
 	args := ReportTaskArgs{
-		ID:       task.ID,
-		TaskType: task.TaskType,
-		WorkerID: task.WorkerID,
+		ID:         task.ID,
+		TaskType:   task.TaskType,
+		WorkerID:   task.WorkerID,
+		TaskStatus: task.TaskStatus,
 	}
 	reply := ReportTaskReply{}
 	call("Coordinator.MarkTask", &args, &reply)
@@ -66,10 +69,14 @@ func reportTask(task *Task) {
 func performMap(task *Task, mapf func(string, string) []KeyValue) {
 	file, err := os.Open(task.InputFile)
 	if err != nil {
+		task.TaskStatus = Failed
+		reportTask(task)
 		return
 	}
 	contents, err := ioutil.ReadAll(file)
 	if err != nil {
+		task.TaskStatus = Failed
+		reportTask(task)
 		return
 	}
 	file.Close()
@@ -99,19 +106,19 @@ func writeIntermediateFiles(intermediateValues map[int][]KeyValue, taskID int) e
 		go func(index int, keyValues []KeyValue) {
 			defer wg.Done()
 			fileName := fmt.Sprintf("mr-%d-%d", taskID, index)
-			file, err := os.Create(fileName)
-			if err != nil {
-				errChan <- err
-				return
-			}
-			defer file.Close()
-			enc := json.NewEncoder(file)
+			var buffer bytes.Buffer
+			enc := json.NewEncoder(&buffer)
 			for _, keyValue := range keyValues {
 				err := enc.Encode(&keyValue)
 				if err != nil {
 					errChan <- err
 					return
 				}
+			}
+			err := atomicWrite(fileName, &buffer)
+			if err != nil {
+				errChan <- err
+				return
 			}
 		}(index, keyValues)
 	}
@@ -139,6 +146,8 @@ func performReduce(task *Task, reducef func(string, []string) string) {
 	for index, _ := range matches {
 		f, err := os.Open(matches[index])
 		if err != nil {
+			task.TaskStatus = Failed
+			reportTask(task)
 			return
 		}
 		decoder := json.NewDecoder(f)
@@ -149,13 +158,7 @@ func performReduce(task *Task, reducef func(string, []string) string) {
 			}
 			results[kv.Key] = append(results[kv.Key], kv.Value)
 		}
-		f.Close()
 	}
-	outFile, err := os.Create(fmt.Sprintf("mr-out-%d", task.ID))
-	if err != nil {
-		return
-	}
-	defer outFile.Close()
 
 	/*
 		Both bufio.NewWriter and strings.Builder are used in Go for efficient concatenation or creation of strings,
@@ -167,16 +170,25 @@ func performReduce(task *Task, reducef func(string, []string) string) {
 		more efficient than string concatenation (+ or +=) for building up large strings.
 	*/
 
-	writer := bufio.NewWriter(outFile)
+	var buffer bytes.Buffer
+	writer := bufio.NewWriter(&buffer)
 
 	for key, val := range results {
 		writer.WriteString(fmt.Sprintf("%v %v\n", key, reducef(key, val)))
 	}
 	err = writer.Flush()
 	if err != nil {
+		task.TaskStatus = Failed
+		reportTask(task)
 		return
 	}
 
+	err = atomicWrite(fmt.Sprintf("mr-out-%d", task.ID), &buffer)
+	if err != nil {
+		task.TaskStatus = Failed
+		reportTask(task)
+		return
+	}
 	reportTask(task)
 }
 
@@ -210,4 +222,30 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 
 	fmt.Println(err)
 	return false
+}
+
+func atomicWrite(filename string, r io.Reader) error {
+	dir, file := filepath.Split(filename)
+	if dir == "" {
+		dir = "."
+	}
+	// create a temporary file
+	tempFile, err := ioutil.TempFile(dir, file)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tempFile.Name())
+
+	// write the contents to the temporary file
+	_, err = io.Copy(tempFile, r)
+	if err != nil {
+		return err
+	}
+
+	// rename the temporary file to the original file
+	err = os.Rename(tempFile.Name(), filename)
+	if err != nil {
+		return err
+	}
+	return nil
 }

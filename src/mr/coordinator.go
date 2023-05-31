@@ -72,7 +72,7 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 }
 
 func (c *Coordinator) MarkTask(args *ReportTaskArgs, reply *ReportTaskReply) error {
-	reply.OK = c.MarkTaskCompleted(args.ID, args.TaskType, args.WorkerID)
+	reply.OK = c.MarkTaskCompleted(args.ID, args.TaskType, args.WorkerID, args.TaskStatus)
 	return nil
 }
 
@@ -94,7 +94,7 @@ func (c *Coordinator) checkTimeout(taskID string) {
 	}
 }
 
-func (c *Coordinator) MarkTaskCompleted(taskID int, taskType TaskType, workerID int) bool {
+func (c *Coordinator) MarkTaskCompleted(taskID int, taskType TaskType, workerID int, taskStatus TaskStatus) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	id := fmt.Sprintf("%s-%d", "Map", taskID)
@@ -103,16 +103,27 @@ func (c *Coordinator) MarkTaskCompleted(taskID int, taskType TaskType, workerID 
 	}
 	task := c.tasks[id]
 	if task.WorkerID == workerID { // task is assigned to the worker
-		task.TaskStatus = Completed
-		if task.TaskType == TaskMap {
-			c.mTaskCount--
-		} else {
-			c.rTaskCount--
+		if task.TaskStatus == InProgress && taskStatus != Failed {
+			task.TaskStatus = Completed
+			if task.TaskType == TaskMap {
+				c.mTaskCount--
+			} else {
+				c.rTaskCount--
+			}
+			if c.mTaskCount == 0 && c.rTaskCount == 0 {
+				c.state = Done
+			}
+			return true
+		} else if taskStatus == Failed {
+			task.TaskStatus = Idle
+			task.WorkerID = -1
+			task.Timestamp = time.Time{}
+			if task.TaskType == TaskMap {
+				c.mapTasks <- task
+			} else {
+				c.reduceTasks <- task
+			}
 		}
-		if c.mTaskCount == 0 && c.rTaskCount == 0 {
-			c.state = Done
-		}
-		return true
 	}
 	return false // this happens when the task is reassigned to another worker
 }
