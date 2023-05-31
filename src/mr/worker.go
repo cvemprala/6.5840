@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -64,14 +65,11 @@ func reportTask(task *Task) {
 
 func performMap(task *Task, mapf func(string, string) []KeyValue) {
 	file, err := os.Open(task.InputFile)
-	fmt.Printf("Opening %v\n", task.InputFile)
 	if err != nil {
-		fmt.Printf("cannot open the map file %v\n", task)
 		return
 	}
 	contents, err := ioutil.ReadAll(file)
 	if err != nil {
-		fmt.Printf("cannot read the map file %v\n", task)
 		return
 	}
 	file.Close()
@@ -81,22 +79,19 @@ func performMap(task *Task, mapf func(string, string) []KeyValue) {
 	// in order to do that we need to group the keyValues by their key
 	// the way we do that is by first calculating the hash of the key
 	// then we use the hash to determine which file to write the keyValues to
-	intermediateValues := make([][]KeyValue, task.NReduce)
+	intermediateValues := make(map[int][]KeyValue)
 	for _, keyValue := range keyValues {
 		index := ihash(keyValue.Key) % task.NReduce
 		intermediateValues[index] = append(intermediateValues[index], keyValue)
 	}
 	err = writeIntermediateFiles(intermediateValues, task.ID)
 	if err != nil {
-		fmt.Printf("cannot write the intermediate files %v\n", err)
 		task.TaskStatus = Failed
-	} else {
-		task.TaskStatus = Completed
 	}
 	reportTask(task)
 }
 
-func writeIntermediateFiles(intermediateValues [][]KeyValue, taskID int) error {
+func writeIntermediateFiles(intermediateValues map[int][]KeyValue, taskID int) error {
 	var wg sync.WaitGroup
 	wg.Add(len(intermediateValues))
 	errChan := make(chan error, len(intermediateValues))
@@ -135,9 +130,9 @@ func writeIntermediateFiles(intermediateValues [][]KeyValue, taskID int) error {
 }
 
 func performReduce(task *Task, reducef func(string, []string) string) {
-	pattern := fmt.Sprintf("mr-*-%d", task.ID)
+	pattern := fmt.Sprintf("mr-*-%d", task.ID) // here task.ID represents the nth reducer
 	matches, _ := filepath.Glob(pattern)
-	foo := make(map[string][]string)
+	results := make(map[string][]string)
 	for index, _ := range matches {
 		f, _ := os.Open(matches[index])
 		decoder := json.NewDecoder(f)
@@ -146,12 +141,29 @@ func performReduce(task *Task, reducef func(string, []string) string) {
 			if err := decoder.Decode(&kv); err != nil {
 				break
 			}
-			foo[kv.Key] = append(foo[kv.Key], kv.Value)
+			results[kv.Key] = append(results[kv.Key], kv.Value)
 		}
 	}
-	for key, val := range foo {
-		fmt.Printf("key %v, count %v\n", key, reducef(key, val))
+	outFile, _ := os.Create(fmt.Sprintf("mr-out-%d", task.ID))
+	defer outFile.Close()
+
+	/*
+		Both bufio.NewWriter and strings.Builder are used in Go for efficient concatenation or creation of strings,
+		but they are used in different scenarios and have different behaviors. Use bufio.NewWriter when you're writing
+		data to an io.Writer and want to buffer those writes to reduce the number of system calls. This is typically
+		used when writing data to files or network connections.
+
+		Use strings.Builder when you're building a string in memory that will be used in your program. This is typically
+		more efficient than string concatenation (+ or +=) for building up large strings.
+	*/
+
+	writer := bufio.NewWriter(outFile)
+
+	for key, val := range results {
+		writer.WriteString(fmt.Sprintf("%v %v\n", key, reducef(key, val)))
 	}
+	writer.Flush()
+
 	reportTask(task)
 }
 
@@ -162,35 +174,6 @@ func getTask() *Task {
 	reply := GetTaskReply{}
 	call("Coordinator.GetTask", &args, &reply)
 	return reply.Task
-}
-
-//
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
-
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-	} else {
-		fmt.Printf("call failed!\n")
-	}
 }
 
 //
