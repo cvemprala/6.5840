@@ -131,10 +131,16 @@ func writeIntermediateFiles(intermediateValues map[int][]KeyValue, taskID int) e
 
 func performReduce(task *Task, reducef func(string, []string) string) {
 	pattern := fmt.Sprintf("mr-*-%d", task.ID) // here task.ID represents the nth reducer
-	matches, _ := filepath.Glob(pattern)
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return
+	}
 	results := make(map[string][]string)
 	for index, _ := range matches {
-		f, _ := os.Open(matches[index])
+		f, err := os.Open(matches[index])
+		if err != nil {
+			return
+		}
 		decoder := json.NewDecoder(f)
 		for {
 			var kv KeyValue
@@ -143,8 +149,12 @@ func performReduce(task *Task, reducef func(string, []string) string) {
 			}
 			results[kv.Key] = append(results[kv.Key], kv.Value)
 		}
+		f.Close()
 	}
-	outFile, _ := os.Create(fmt.Sprintf("mr-out-%d", task.ID))
+	outFile, err := os.Create(fmt.Sprintf("mr-out-%d", task.ID))
+	if err != nil {
+		return
+	}
 	defer outFile.Close()
 
 	/*
@@ -162,7 +172,10 @@ func performReduce(task *Task, reducef func(string, []string) string) {
 	for key, val := range results {
 		writer.WriteString(fmt.Sprintf("%v %v\n", key, reducef(key, val)))
 	}
-	writer.Flush()
+	err = writer.Flush()
+	if err != nil {
+		return
+	}
 
 	reportTask(task)
 }
